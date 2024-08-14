@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O0 -Wno-unused-result
+CFLAGS = -O2 -Wno-unused-result
 LDFLAGS =
 SRC = $(wildcard *.c)
 EXE = client server
