@@ -18,24 +18,31 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 
+#include <common.h>
+
 
 #define MAX_CLIENTS 10000u
-#define MAX_REQS 1000u
-#define MAX_FILES 10u
+#define MAX_REQS    1000u
+#define MAX_FILES   10u
+
+typedef struct client_results {
+	unsigned int time;
+} c_results_t;
 
 typedef struct client {
 	char *files[MAX_FILES]; /* Paths to files client will request */
 	unsigned int req_num;   /* Number of request client will make */
 	int interv;             /* Time between requests in ms, -1 if random */
 	int max_latency;        /* Maximum acceptable latency of data retrival in ms, -1 if no latency check */
+	c_results_t *results;   /* Pointer to memory where thread results are stored */
 } client_t;
 
 /* ------------------------ GLOBALS ------------------------ */
 
 static unsigned int verbosity = 0;     /* No verbosity on default */
-static unsigned int is_quiet = 0;       /* Quiet run flag */
+static unsigned int is_quiet = 0;      /* Quiet run flag */
 static const client_t default_client = {
-	.files = {"/"},
+	.files = {"/", NULL},
 	.req_num = 10,
 	.interv = 500,
 	.max_latency = -1
@@ -44,15 +51,43 @@ static unsigned int client_num = 10;   /* Number of concurrent clients */
 static unsigned int request_num = 100; /* Number of all requests */
 static char *if_name;                  /* Name of network interface */
 static char hostname[33];              /* Name of server */
-static unsigned int port = 80;         /* Server port */
-static const char *config_path;        /* Path to config */
+static unsigned int server_port = 0;   /* Server port to connect to */
+static char *config_path = NULL;       /* Path to config */
+static char *log_file = NULL;          /* Log file name */
 
 /* ------------------------ REQUESTS ----------------------- */
 
-const char *request = "GET / HTTP/1.1\r\n"
-                      "Host: 127.0.0.1\r\n"
-                      "User-Agent: SimpleHTTPClient\r\n"
-                      "Connection: close\r\n\r\n";
+static const char *request_header = "User-Agent: AdamBenchmark\r\n"
+                                    "Connection: close\r\n"
+                                    "\r\n";
+
+
+static const char *create_request(const char *method, const char *uri,
+                                  const char *header, const char *body)
+{
+	char *request = (char *)malloc(4096 * sizeof(char));
+	int n = 0;
+
+	if (request == NULL) {
+		return NULL;
+	}
+
+	if (method == NULL || uri == NULL) {
+		free(request);
+		return NULL;
+	}
+
+	n += sprintf(request, "%s %s HTTP/0.9\r\n", method, uri);
+	n += sprintf(request + n, "Host: %s\r\n", hostname);
+	if (header != NULL) {
+		n += sprintf(request + n, "%s", header);
+	}
+	if (body != NULL) {
+		sprintf(request + n, "%s\r\n", body);
+	}
+
+	return request;
+}
 
 
 static void print_usage(char *prog_path)
@@ -86,15 +121,17 @@ static int check_valid_interface(const char *if_name)
 	ret = ioctl(sockfd, SIOCGIFFLAGS, &ifr);
 	if (ret < 0) {
 		/* Unable to obtain flags */
-		return -2;
+		fprintf(stderr, "No such interface: %s\n", if_name);
+		return -1;
 	}
 
 	if_flags = ifr.ifr_flags;
-	if (if_flags & IFF_RUNNING) {
-		return 0;
+	if ((if_flags & IFF_RUNNING) == 0) {
+		fprintf(stderr, "Interface '%s' is not running\n", if_name);
+		return -1;
 	}
 
-	return -1;
+	return 0;
 }
 
 
@@ -139,9 +176,9 @@ static int parse_addr(const char* arg)
 	}
 
 	strcpy(hostname, base_hostname);
-	port = atoi(base_port);
+	server_port = atoi(base_port);
 
-	if (port < 1024 || port > 65535) {
+	if (server_port < 1024 || server_port > 65535) {
 		fprintf(stderr, "Provide correct port from range 1025-65535\n");
 		err = -1;
 	}
@@ -167,9 +204,83 @@ int parse_conf(const char *path)
 }
 
 
-void *client_thread(void *arg)
+int save_results(const char *path, char *log_file)
 {
 
+	return 0;
+}
+
+
+void *client_thread(void *arg)
+{
+	client_t *client = (client_t *)arg;
+	struct sockaddr_in server_addr;
+	int sockfd;
+	int try = 10;
+	const char *error_msg;
+
+	sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (sockfd < 0) {
+		error_msg = "Socket creation failed";
+		pthread_exit((void *)error_msg);
+	}
+
+	memset(&server_addr, 0, sizeof server_addr);
+	server_addr.sin_family = AF_INET;
+	server_addr.sin_addr.s_addr = inet_addr(hostname);
+	server_addr.sin_port = htons(server_port);
+
+	for (int i = 0; i < client->req_num; i++) {
+		const char *request;
+		size_t req_len;
+		unsigned int files_num = 0u;
+		unsigned int idx;
+
+		for (int i = 0; client->files[i] != NULL && i < MAX_FILES; i++) {
+			files_num++;
+		}
+
+		while (connect(sockfd, (struct sockaddr *)&server_addr, sizeof server_addr) < 0) {
+			if (try-- > 0) {
+				close(sockfd);
+				sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+				if (sockfd < 0) {
+					error_msg = "Socket creation failed";
+					pthread_exit((void *)error_msg);
+				}
+				sleep(1);
+			}
+			else {
+				close(sockfd);
+				error_msg = "Couldn't connect to server";
+				pthread_exit((void *)error_msg);
+			}
+		}
+
+		/* Index of random file from client predefined files */
+		idx = get_random(0, files_num - 1);
+
+		printf("idx: %u\n", idx);
+
+		request = create_request("GET", client->files[idx], request_header, NULL);
+		if (request == NULL) {
+			error_msg = "Request creation failed";
+			pthread_exit((void *)error_msg);
+		}
+		req_len = strlen(request);
+
+		error_msg = sendall(sockfd, request, req_len, MSG_NOSIGNAL);
+		if (error_msg != NULL) {
+			pthread_exit((void *)error_msg);
+		}
+		free((void *)request);
+
+		// read
+
+		usleep(client->interv * 1000);
+	}
+
+	return (void *)NULL;
 }
 
 
@@ -203,12 +314,7 @@ int main(int argc, char **argv)
 				break;
 			case 'i':
 				if_name = optarg;
-				ret = check_valid_interface(if_name);
-				if (ret == -1) {
-					fprintf(stderr, "Interface '%s' is not running\n", if_name);
-					exit(EXIT_FAILURE);
-				} else if (ret == -2) {
-					fprintf(stderr, "No such interface: %s\n", if_name);
+				if (check_valid_interface(if_name) < 0) {
 					exit(EXIT_FAILURE);
 				}
 				break;
@@ -240,19 +346,64 @@ int main(int argc, char **argv)
 	if (argv[optind] == NULL || ret == -2) {
 		print_usage(argv[0]);
 		exit(EXIT_FAILURE);
-	} else if (ret == -1) {
+	}
+	else if (ret == -1) {
 		exit(EXIT_FAILURE);
 	}
 
-	printf("hostname: %s\nport: %hu\n", hostname, port);
-	
 	// read config
+	if (config_path != NULL) {
+		ret = parse_conf(config_path);
+		if (ret < 0) {
+			fprintf(stderr, "Error while parsing configure file\n");
+			exit(EXIT_FAILURE);
+		}
+	}
 
 	// start clients
+	pthread_t threads[client_num];
+	for (int i = 0; i < client_num; i++) {
+		if (config_path == NULL) {
+			ret = pthread_create(&threads[i], NULL, client_thread, (void*)&default_client);
+			if (ret != 0) {
+				fprintf(stderr, "Error creating thread number %d. Error code: %d\n", i, ret);
+				exit(EXIT_FAILURE);
+			}
+		}
+		
+	}
 
-	// log data
+	/* Wait for clients to complete execution */
+	for (int i = 0; i < client_num; i++) {
+		void *thread_ret;
 
-	// join clients
+		ret = pthread_join(threads[i], &thread_ret);
+		if (ret != 0) {
+			fprintf(stderr, "Error while joining one of threads. Error code: %d\n", ret);
+			exit(EXIT_FAILURE);
+		}
+		
+		if (thread_ret != 0) {
+			char *error_msg = (char *)thread_ret;
+			fprintf(stderr, "One of threads finished unsuccessfully\n");
+			fprintf(stderr, "Error message: %s\n", error_msg);
+			exit(EXIT_FAILURE);
+		}
+	}
+	
+	// log results
+	if (is_quiet == 0) {
+		ret = save_results("../logs", log_file);
+		if (ret < 0) {
+			fprintf(stderr, "Error while saving results\n");
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	printf("Clients finished execution.\n");
+	if (is_quiet == 0 && log_file != NULL) {
+		printf("Results saved in %s.\n", log_file);
+	}
 
 	return EXIT_SUCCESS;
 }
