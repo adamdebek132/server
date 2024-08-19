@@ -42,25 +42,23 @@ int main() {
             close(server_fd);
             exit(EXIT_FAILURE);
         }
-        pid_t pid = fork();
-        if (pid == 0) {
-            printf("Connection accepted.\n");
 
-            int bytes_read;
-            int i = 0;
-            while ((bytes_read = read(new_socket, buffer, BUFFER_SIZE)) > 0) {
-                printf("%s", buffer);
-                printf("i: %d\n", ++i);
-                // send(new_socket, response, strlen(response), 0);
-                memset(buffer, 0, BUFFER_SIZE);
-            }
+        printf("Connection accepted.\n");
 
-            if (bytes_read < 0) {
-                perror("read");
-            }
-
-            close(new_socket);
+        int bytes_read;
+        static int i = 0;
+        while ((bytes_read = read(new_socket, buffer, BUFFER_SIZE)) > 0) {
+            printf("%s", buffer);
+            printf("i: %d\n", ++i);
+            // send(new_socket, response, strlen(response), 0);
+            memset(buffer, 0, BUFFER_SIZE);
         }
+
+        if (bytes_read < 0) {
+            perror("read");
+        }
+
+        close(new_socket);
     }
 
     close(server_fd);

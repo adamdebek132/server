@@ -44,16 +44,18 @@ static unsigned int is_quiet = 0;      /* Quiet run flag */
 static const client_t default_client = {
 	.files = {"/", NULL},
 	.req_num = 10,
-	.interv = 500,
+	.interv = 50,
 	.max_latency = -1
 }; /* Default client type */
-static unsigned int client_num = 10;   /* Number of concurrent clients */
-static unsigned int request_num = 100; /* Number of all requests */
+static unsigned int client_num = 1;    /* Number of concurrent clients */
+static unsigned int request_num = 0;   /* Number of all requests */
+static unsigned int complete_reqs = 0; /* All completed requests */
+static unsigned int failed_reqs = 0;   /* All failed requests */
 static char *if_name;                  /* Name of network interface */
 static char hostname[33];              /* Name of server */
 static unsigned int server_port = 0;   /* Server port to connect to */
 static char *config_path = NULL;       /* Path to config */
-static char *log_file = NULL;          /* Log file name */
+static char log_file[64];              /* Log file name */
 
 /* ------------------------ REQUESTS ----------------------- */
 
@@ -92,10 +94,15 @@ static const char *create_request(const char *method, const char *uri,
 
 static void print_usage(char *prog_path)
 {
-	char *prog_name;
-	prog_name = basename(prog_path);
-
-	fprintf(stderr, "Usage: %s <hostname:port>\n", prog_name);
+	printf("Usage: %s [options] <hostname:port>\n", basename(prog_path));
+	printf("Options:\n");
+	printf("\t-n: number of request per connection\n");
+	printf("\t-c: number of concurrent connections\n");
+	printf("\t-f: path to config file\n");
+	printf("\t-i: interface name to which traffic is routed\n");
+	printf("\t-v: enable verbose mode\n");
+	printf("\t-q: enable quiet mode\n");
+	printf("\t-h: print help\n");
 }
 
 
@@ -204,9 +211,44 @@ int parse_conf(const char *path)
 }
 
 
-int save_results(const char *path, char *log_file)
+int save_results(const char *log_dir)
 {
+	FILE *log;
+	time_t curr_time;
+	struct tm *curr_date;
+	char path[256];
 
+	time(&curr_time);
+	curr_date = localtime(&curr_time);
+	if (curr_date == NULL) {
+		perror("localtime");
+		return -1;
+	}
+
+	sprintf(log_file, "logs-%02d%02d%02d-%02d:%02d:%02d",
+					   curr_date->tm_year - 100,
+					   curr_date->tm_mon + 1,
+					   curr_date->tm_mday,
+					   curr_date->tm_hour,
+					   curr_date->tm_min,
+					   curr_date->tm_sec);
+
+	sprintf(path, "%s/%s", log_dir, log_file);
+
+	if ((log = fopen(path, "w")) == NULL) {
+		fprintf(stderr, "Can't create log file in: %s\n", path);
+		return -1;
+	}
+
+	fprintf(log, "Server Hostname: %s\n", hostname);
+	fprintf(log, "Server Port: %d\n\n", server_port);
+	fprintf(log, "Concurrent connections: %u\n", client_num);
+	fprintf(log, "Total requests: %u\n", request_num);
+	fprintf(log, "Complete requests: %u\n", complete_reqs);
+	fprintf(log, "Failed requests: %u\n", failed_reqs);
+
+
+	fclose(log);
 	return 0;
 }
 
@@ -351,7 +393,7 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	// read config
+	/* Read config */
 	if (config_path != NULL) {
 		ret = parse_conf(config_path);
 		if (ret < 0) {
@@ -360,7 +402,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	// start clients
+	/* Start connections */
 	pthread_t threads[client_num];
 	for (int i = 0; i < client_num; i++) {
 		if (config_path == NULL) {
@@ -391,9 +433,9 @@ int main(int argc, char **argv)
 		}
 	}
 	
-	// log results
+	/* Log results */
 	if (is_quiet == 0) {
-		ret = save_results("../logs", log_file);
+		ret = save_results("logs");
 		if (ret < 0) {
 			fprintf(stderr, "Error while saving results\n");
 			exit(EXIT_FAILURE);
@@ -401,7 +443,7 @@ int main(int argc, char **argv)
 	}
 
 	printf("Clients finished execution.\n");
-	if (is_quiet == 0 && log_file != NULL) {
+	if (is_quiet == 0) {
 		printf("Results saved in %s.\n", log_file);
 	}
 
