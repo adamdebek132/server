@@ -2,6 +2,7 @@
  * Http server benchmark
  *
  * Author: Adam Debek
+ *
  */
 
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <arpa/inet.h>
 #include <net/if.h>
 
@@ -25,6 +27,7 @@
 #define MAX_CLIENTS 10000u
 #define MAX_REQS    1000000u
 #define MAX_FILES   1000u
+#define MAX_EXENTS  10000
 
 typedef struct client_results {
 	unsigned int time;
@@ -353,8 +356,82 @@ void *client_thread(void *arg)
 }
 
 
+typedef struct {
+	int *fds;
+	int *readyfds;
+} thrargs_t;
+
+void preperrmsg(char *prefix, char *buf, size_t buflen)
+{
+	size_t prefix_len;
+
+	memset(buf, 0, buflen);
+
+	strncpy(buf, prefix, buflen);
+	buf[buflen - 1] = '\0';
+
+	prefix_len = strlen(buf);
+
+	if (prefix_len + 2 < buflen) {
+		buf[prefix_len] = ':';
+		buf[prefix_len + 1] = ' ';
+		prefix_len += 2;
+		buf[prefix_len] = '\0';
+	}
+
+	strerror_r(errno, buf + prefix_len, buflen - prefix_len);
+}
+
 void *polling_thread(void *arg)
 {
+	struct epoll_event ev, events[MAX_EXENTS];
+	int nfds, epollfd;
+	size_t emsg_len = 256;
+	char *error_msg = NULL;
+	thrargs_t *args = (thrargs_t *)arg;
+
+	error_msg = (char *)malloc(emsg_len);
+	if (error_msg == NULL) {
+		pthread_exit("Couldn't allocate memory for error message\n");
+	}
+
+	epollfd = epoll_create1(0);
+	if (epollfd == -1) {
+		close(epollfd);
+		preperrmsg("epoll_create1", error_msg, emsg_len);
+		pthread_exit(error_msg);
+	}
+
+	for (int i = 0; i < client_num; i++) {
+		ev.events = EPOLLIN;
+		ev.data.fd = args->fds[i];
+		if (epoll_ctl(epollfd, EPOLL_CTL_ADD, args->fds[i], &ev) == -1) {
+			close(epollfd);
+			preperrmsg("epoll_ctl", error_msg, emsg_len);
+			pthread_exit(error_msg);
+		}
+	}
+
+	for (;;) {
+		nfds = epoll_wait(epollfd, events, MAX_EXENTS, -1);
+		if (nfds == -1) {
+			if (errno == EINTR) {
+				/* No more events and signal prompting thread to exit was received */
+				break;
+			} else {
+				close(epollfd);
+				preperrmsg("epoll_wait", error_msg, emsg_len);
+				pthread_exit(error_msg);
+			}
+		}
+
+		for (int n = 0; n < nfds; n++) {
+			if () {
+				
+			}
+		}
+	}
+
 	return NULL;
 }
 
